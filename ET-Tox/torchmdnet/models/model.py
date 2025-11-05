@@ -65,6 +65,21 @@ def create_model(args, prior_model=None, mean=None, std=None):
             use_atom_props=args["use_atom_props"],
             **shared_args,
         )
+    elif args["model"] == "equivariant-transformer-edge":
+        from torchmdnet.models.torchmd_et_edge import TorchMD_ET
+
+        is_equivariant = True
+        representation_model = TorchMD_ET(
+            attn_activation=args["attn_activation"],
+            num_heads=args["num_heads"],
+            distance_influence=args["distance_influence"],
+            layernorm_on_vec=args["layernorm_on_vec"],
+            use_total_charge=args["use_total_charge"],
+            use_energy_feature=args["use_energy_feature"],
+            use_smiles=args["use_smiles"],
+            use_atom_props=args["use_atom_props"],
+            **shared_args,
+        )
     else:
         raise ValueError(f'Unknown architecture: {args["model"]}')
 

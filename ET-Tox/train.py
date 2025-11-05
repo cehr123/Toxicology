@@ -136,6 +136,9 @@ def get_args():
 
     args = parser.parse_args()
 
+    # Create log directory if it doesn't exist (needed for redirect and save_argparse)
+    os.makedirs(args.log_dir, exist_ok=True)
+
     if args.redirect:
         sys.stdout = open(os.path.join(args.log_dir, "log"), "w")
         sys.stderr = sys.stdout
