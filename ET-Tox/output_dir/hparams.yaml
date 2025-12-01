@@ -84,7 +84,7 @@ lr_warmup_steps: 0
 max_len_smiles: 325
 max_num_neighbors: 250
 max_z: 100
-model: equivariant-transformer-edge
+model: equivariant-transformer
 neighbor_embedding: true
 ngpus: 1
 num_atom_types: 38
