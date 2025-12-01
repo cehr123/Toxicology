@@ -213,7 +213,7 @@ def main():
 
     if not test_run:
         trainer = pl.Trainer(
-            strategy=DDPStrategy(find_unused_parameters=False),
+            strategy=DDPStrategy(find_unused_parameters=True),
             max_epochs=args.num_epochs,
             gpus=args.ngpus,
             num_nodes=args.num_nodes,

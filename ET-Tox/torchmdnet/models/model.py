@@ -3,7 +3,7 @@ from typing import Optional, List, Tuple
 import torch
 from torch.autograd import grad
 from torch import nn, Tensor
-from torch_scatter import scatter
+from torch_scatter import scatter, scatter_add
 from pytorch_lightning.utilities import rank_zero_warn
 from torchmdnet.models import output_modules
 from torchmdnet.models.utils import AccumulatedNormalization
@@ -171,6 +171,7 @@ class TorchMD_Net(nn.Module):
         use_smiles=False,
         context_length=175,
         use_smiles_only=False,
+        n_gram=True
     ):
         super(TorchMD_Net, self).__init__()
         
@@ -182,11 +183,32 @@ class TorchMD_Net(nn.Module):
         self.compute_d4_atomic = compute_d4_atomic
         self.use_smiles = use_smiles
         self.use_smiles_only = use_smiles_only
+        self.n_gram = n_gram
         
         self.reduce_op = reduce_op
         self.derivative = derivative
 
-        self.output_model = output_model
+        # Conditionally register output_model and n_gram_projection based on n_gram
+        if n_gram and not use_smiles_only:
+            # When using n_gram, we don't need output_model as a registered module
+            # Extract output_channels before discarding the module
+            output_channels = 12  # default
+            if hasattr(output_model, 'toxicity_prediction'):
+                output_channels = output_model.toxicity_prediction.out_features
+            elif hasattr(output_model, '__class__'):
+                # Try to get from class name or other attributes
+                # For now, use default and let it be inferred in forward if needed
+                pass
+            # Store output_channels for potential lazy initialization
+            self._n_gram_output_channels = output_channels
+            self.n_gram_projection = nn.Linear(6 * hidden_channels, output_channels)
+            # Don't register output_model - it won't be used when n_gram=True
+            self.output_model = None
+        else:
+            # When not using n_gram, register output_model as a module
+            self.output_model = output_model
+            self.n_gram_projection = None
+            self._n_gram_output_channels = None
         
         if not use_smiles_only:
             self.representation_model = representation_model
@@ -230,7 +252,11 @@ class TorchMD_Net(nn.Module):
     def reset_parameters(self):
         
         self.representation_model.reset_parameters()
-        self.output_model.reset_parameters()
+        if self.output_model is not None:
+            self.output_model.reset_parameters()
+        if self.n_gram_projection is not None:
+            nn.init.xavier_uniform_(self.n_gram_projection.weight)
+            self.n_gram_projection.bias.data.fill_(0)
 
     def forward(
         self,
@@ -297,23 +323,75 @@ class TorchMD_Net(nn.Module):
 
             x = x + ea_rep + ea_ele + ea_vdw
             
-            # apply the output network
-            if self.output_model.__class__.__name__ == "EquivariantScalarToxicity":
-                x = self.output_model.pre_reduce(x, v, z, pos, batch)
-                x = scatter(tox, batch, dim=0, reduce=self.reduce_op)
+            '''This is where we do the N-gram style graph embedding'''
+            if self.n_gram:
+                num_graphs = batch.max().item() + 1
+                hidden_dim = x.size(-1)
+                max_nodes = scatter_add(torch.ones_like(batch), batch, dim=0).max().item()
+                A = x.new_zeros(num_graphs, max_nodes, max_nodes)
+                X = x.new_zeros(num_graphs, max_nodes, hidden_dim)  
+
+                for i in range(x.size(0)):
+                    g = batch[i].item()
+                    local_idx = (batch[:i] == g).sum().item()
+                    X[g, local_idx] = x[i]
+
+                for e in range(edge_index.size(1)):
+                    i = edge_index[0, e].item()
+                    j = edge_index[1, e].item()
+                    gi = batch[i].item()
+                    gj = batch[j].item()
+                    assert gi == gj  # edges never cross graphs
+                    li = (batch[:i] == gi).sum().item()
+                    lj = (batch[:j] == gj).sum().item()
+                    A[gi, li, lj] = 1.0
+                    A[gi, lj, li] = 1.0 
+                
+                walk = X.clone()
+                v1 = walk.sum(dim=1)                         # [G, H]
+
+                walk = A @ walk * X
+                v2 = walk.sum(dim=1)
+
+                walk = A @ walk * X
+                v3 = walk.sum(dim=1)
+
+                walk = A @ walk * X
+                v4 = walk.sum(dim=1)
+
+                walk = A @ walk * X
+                v5 = walk.sum(dim=1)
+
+                walk = A @ walk * X
+                v6 = walk.sum(dim=1)
+
+                out = torch.stack([v1, v2, v3, v4, v5, v6], dim=1)
+                out = out.reshape(num_graphs, -1)  # [G, 6*H]
+                
+                # Project n-gram features to output_channels
+                # n_gram_projection should always be created in __init__ when n_gram=True
+                assert self.n_gram_projection is not None, "n_gram_projection must be created in __init__ when n_gram=True"
+                out = self.n_gram_projection(out)
+                ''' Back to the original ET tox'''
             else:
-                x = self.output_model.pre_reduce(x, v, z, pos, batch)
+                # apply the output network
+                assert self.output_model is not None, "output_model must be registered when n_gram=False"
+                if self.output_model.__class__.__name__ == "EquivariantScalarToxicity":
+                    x = self.output_model.pre_reduce(x, v, z, pos, batch)
+                    x = scatter(tox, batch, dim=0, reduce=self.reduce_op)
+                else:
+                    x = self.output_model.pre_reduce(x, v, z, pos, batch)
+                
+                # aggregate atoms
+                out = scatter(x, batch, dim=0, reduce=self.reduce_op)
 
-            # aggregate atoms
-            out = scatter(x, batch, dim=0, reduce=self.reduce_op)
-
-            # apply output model after reduction
-            out = self.output_model.post_reduce(out)
+                # apply output model after reduction
+                out = self.output_model.post_reduce(out)
 
             return out, tox
         
         else:
             x = self.smiles_encoder(smiles)
+            assert self.output_model is not None, "output_model must be registered when use_smiles_only=True"
             out = self.output_model.pre_reduce(x, v=None, z=z, pos=pos, batch=batch)
             return out, None
-    
