@@ -188,24 +188,14 @@ class TorchMD_Net(nn.Module):
         self.reduce_op = reduce_op
         self.derivative = derivative
 
-        # Conditionally register output_model and n_gram_projection based on n_gram
         if n_gram and not use_smiles_only:
-            # When using n_gram, we don't need output_model as a registered module
-            # Extract output_channels before discarding the module
-            output_channels = 12  # default
+            output_channels = 12 
             if hasattr(output_model, 'toxicity_prediction'):
                 output_channels = output_model.toxicity_prediction.out_features
-            elif hasattr(output_model, '__class__'):
-                # Try to get from class name or other attributes
-                # For now, use default and let it be inferred in forward if needed
-                pass
-            # Store output_channels for potential lazy initialization
             self._n_gram_output_channels = output_channels
             self.n_gram_projection = nn.Linear(6 * hidden_channels, output_channels)
-            # Don't register output_model - it won't be used when n_gram=True
             self.output_model = None
         else:
-            # When not using n_gram, register output_model as a module
             self.output_model = output_model
             self.n_gram_projection = None
             self._n_gram_output_channels = None
@@ -341,14 +331,14 @@ class TorchMD_Net(nn.Module):
                     j = edge_index[1, e].item()
                     gi = batch[i].item()
                     gj = batch[j].item()
-                    assert gi == gj  # edges never cross graphs
+                    assert gi == gj 
                     li = (batch[:i] == gi).sum().item()
                     lj = (batch[:j] == gj).sum().item()
                     A[gi, li, lj] = 1.0
                     A[gi, lj, li] = 1.0 
                 
                 walk = X.clone()
-                v1 = walk.sum(dim=1)                         # [G, H]
+                v1 = walk.sum(dim=1)
 
                 walk = A @ walk * X
                 v2 = walk.sum(dim=1)
@@ -368,8 +358,6 @@ class TorchMD_Net(nn.Module):
                 out = torch.stack([v1, v2, v3, v4, v5, v6], dim=1)
                 out = out.reshape(num_graphs, -1)  # [G, 6*H]
                 
-                # Project n-gram features to output_channels
-                # n_gram_projection should always be created in __init__ when n_gram=True
                 assert self.n_gram_projection is not None, "n_gram_projection must be created in __init__ when n_gram=True"
                 out = self.n_gram_projection(out)
                 ''' Back to the original ET tox'''
