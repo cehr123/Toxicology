@@ -21,6 +21,9 @@ ngpus: 1
 wandb: false
 
 model: equivariant-transformer
+
+use_n_gram: false
+use_edge_attention: true
 #change when using ET
 
 # diffusion_pretraining: false
