@@ -1,4 +1,4 @@
-hyperparameter_tuning: false
+# hyperparameter_tuning: false
 
 test_run: false
 test_checkpoint: ./models/bbbp.ckpt
@@ -9,10 +9,10 @@ save_top_k: 1 #save the best model only
 
 
 activation: silu
-atom_filter: -1
+# atom_filter: -1
 attn_activation: silu
-batch_size: 8
-inference_batch_size: 8
+batch_size: 4
+inference_batch_size: 4
 test_size: 0.1
 train_size: 0.8
 val_size: 0.1
@@ -21,21 +21,23 @@ ngpus: -1
 
 wandb: false
 
-model: equivariant-transformer
+model: equivariant-transformer-edge #equivariant-transformer
+use_n_gram: false
+use_edge_attention: true
 #change when using ET
 
-diffusion_pretraining: false
-emgp_pretraining: false
-position_noise_scale: 0.
-denoising_weight: 0.
-denoising: false
+# diffusion_pretraining: false
+# emgp_pretraining: false
+# position_noise_scale: 0.
+# denoising_weight: 0.
+# denoising: false
 
 linear_probing: false
-finetune_output: false
-load_pretrained: false
-pretrained_model: null
+# finetune_output: false
+# load_pretrained: false
+# pretrained_model: null
 
-toxicity_prediction: true
+# toxicity_prediction: true
 toxicity_weight: 1.0
 energy_tox_multi_task: false
 use_energy_feature: false
@@ -73,8 +75,8 @@ dataset_split: scaffold
 #change for downstream pediction
 
 #TensorNet
-num_linears_tensor: 1
-num_linears_scalar: 2
+# num_linears_tensor: 1
+# num_linears_scalar: 2
 
 #ET
 num_heads: 8
@@ -109,7 +111,7 @@ num_epochs: 3000
 
 num_nodes: 1
 num_workers: 12
-precision: 32
+precision: 16 #32
 rbf_type: expnorm
 redirect: false
 reduce_op: add

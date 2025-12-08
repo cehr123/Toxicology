@@ -215,7 +215,7 @@ def main():
 
     if not test_run:
         trainer = pl.Trainer(
-            strategy=DDPStrategy(find_unused_parameters=False),
+            strategy=DDPStrategy(find_unused_parameters=True, gradient_as_bucket_view=True),
             max_epochs=args.num_epochs,
             gpus=args.ngpus,
             num_nodes=args.num_nodes,
@@ -227,6 +227,7 @@ def main():
             gradient_clip_val=2.0,
             gradient_clip_algorithm="value",
             precision=args.precision,
+            accumulate_grad_batches=2
         )
 
         trainer.fit(model, data)

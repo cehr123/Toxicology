@@ -322,7 +322,7 @@ class EdgeEmbedding(MessagePassing):
 
 
         # this is some torchgeometric magic, should call message
-        out = self.propagate(edge_index, x=x, edge_vec=edge_vec, e=e, q=q, k=k, v=v, size=x.size(0))
+        out = self.propagate(edge_index, x=x, edge_vec=edge_vec, e=e, q=q, k=k, v=v, size=None)
         
         return out
 
