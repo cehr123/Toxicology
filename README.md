@@ -8,8 +8,8 @@ This repository hosts our working copy of **ET-Tox** which was adapted from the 
 | Path | Description |
 - `ET-Tox/train_yaml/`: Ready-to-run experiment configs used for our eval(Tox21, BBBP). Toggle features for edge attention and n-grams via these files.
 - `ET-Tox/data/`: Local copy of MoleculeNet/TDC splits.
-- `ET-Tox/run_tox21_seed1000.sh`: Example SLURM batch script for the Tox21 weights-only experiment.
-- `ET-Tox/z_output_*`: Example training logs, metrics, checkpoints (with/without attention, different seeds).
+- `ET-Tox/train.sh`: Example SLURM batch script for the Tox21 weights-only experiment.
+- `ET-Tox/output_dir`: Example training logs, metrics, checkpoints (with/without attention, different seeds).
   
 ---
 ## Environment Setup
@@ -37,18 +37,17 @@ pip install -e .
 
 ### 1. Direct (interactive) run (with GPU) 
 
-Allocate time on supercomputer.
+The command to run the training code for MoleculeNet datsets is:
 
 ```bash
-python train.py \
-  --conf ./train_yaml/tox21.yaml \
-  --log-dir ./z_output_without_attention/tox21/seed1 \
-  --seed 1 \
-  --splits ./data/MoleculeNet/tox21_seed1_confs1_random.npz
+python train.py --conf ./train_yaml/{DATASET}.yaml --log-dir {OUTPUT_DIR}/{DATASET}/seed{SEED#} --seed {SEED#} --splits ./data/MoleculeNet/splits/{DATASET}_seed{SEED#}_confs1_{SPLIT}.npz
 ```
 
-We keep separate log roots (`z_output_without_attention`, `z_output_attention_only`,
-`z_output_weights_only`) to compare variants.
+For TDCTox and ToxBenchmark: 
+
+```bash
+python train.py --conf ./train_yaml/{DATASET}.yaml --log-dir {OUTPUT_DIR}/{DATASET}/seed{SEED#} --seed {SEED#} --splits ./data/TDCTox/splits/{DATASET}_seed{SEED#}_confs1_{SPLIT}.npz --dataset-split {SPLIT}
+```
 
 ### 2. Batch via SLURM
 
@@ -67,17 +66,64 @@ python train.py \
   --test-checkpoint ./output_dir/tox21.ckpt
 ```
 
-Logs are saved under the chosen `--log-dir`. Recent successful runs are available in the `z_output_*` folders.
+Logs are saved under the chosen `--log-dir`. Recent successful runs are available in the `{OUTPUT_DIR}` folders.
 
 ---
 ## Our Outputs
 
-- `ET-Tox/z_output_without_attention/` – Tox21/BBBP runs with `use_edge_attention: false`.
-- `ET-Tox/z_output_attention_only/` – attention-only ablations.
-- `ET-Tox/z_output_weights_only/` – weight-only experiments.
+In our code, we use the Tox21, ToxCast, SIDER, ClinTox, and BBBP datasets from MoleculeNet. The dataset files with the splits and conformer numbers are found at the source in the Data section above. Those files will be under the `MoleculeNet/splits` directory. We also use the Mutagenicity dataset from ToxBenchmark. From the data source above, the files are in the `TDCTox/splits` directory. 
 
-To reproduce a run, copy the relevant YAML + split file and reuse the logged
-seed, then compare metrics with `metrics.csv`.
+Each dataset version should be labeled as `{DATASET}_seed{SEED#}_confs1_{SPLIT}`. 
+
+To change between the different versions of our model with different components included, edit the `.yaml` files for the corresponding dataset. 
+
+For:
+* Model we evaluated in the paper (edge embeddings + attention + no ngrams):
+  ```
+  model: equivariant-transformer-edge
+  use_n_gram: false
+  use_edge_attention: true
+  ```
+* Complete model (edge embeddings + attention + ngrams):
+  ```
+  model: equivariant-transformer-edge
+  use_n_gram: true
+  use_edge_attention: true
+  ```
+* Ablation model with no attention:
+  ```
+  model: equivariant-transformer-edge
+  use_n_gram: false
+  use_edge_attention: false
+  ```
+* Basic EGNN:
+  ```
+  model: equivariant-transformer
+  use_n_gram: false
+  use_edge_attention: false
+  ```
+  
+### Evaluation
+
+The only evaluation code we used is in test_models.ipynb, change the parameters in the second code block,
+```
+    dataset = "MoleculeNet"
+    dataset_arg = {"num_conformers": 1, "conformer": "best", "data_version": "geom", "dataset": name}
+    dataset_root = "./data/MoleculeNet"
+    dataset_split = "random"
+    splits_path = f"./data/MoleculeNet/splits/{name}_seed{n}_confs1_random.npz"
+```
+based on what dataset you are evaluating. 
+
+The second block calculates ROC-AUC for each of the seed you pass to it using these variables at the top of the block:
+```
+name = "bbbp"
+dataset_names = ["1", "42", "100", "500", "1000"] 
+output_dir =  "z_output_dir_model" 
+rocauc_each = []
+```
+
+Running the third block of the notebook will get the mean and standard deviation of what is in `rocauc_each`.
 
 ---
 
