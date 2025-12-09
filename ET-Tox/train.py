@@ -83,6 +83,8 @@ def get_args():
     parser.add_argument('--trainable-rbf', type=bool, default=False, help='If distance expansion functions should be trainable')
     parser.add_argument('--neighbor-embedding', type=bool, default=False, help='If a neighbor embedding should be applied before interactions')
     parser.add_argument('--aggr', type=str, default='add', help='Aggregation operation for CFConv filter output. Must be one of \'add\', \'mean\', or \'max\'')
+    parser.add_argument('--use-n-gram', type=bool, default=True, help='Use N-gram random-walk readout to obtain graph embeddings.')
+    parser.add_argument('--use-edge-attention', type=bool, default=True, help='Use attention-weighted edge embeddings in ET-edge models.')
 
     # Transformer specific
     parser.add_argument('--distance-influence', type=str, default='both', choices=['keys', 'values', 'both', 'none'], help='Where distance information is included inside the attention')
@@ -213,7 +215,7 @@ def main():
 
     if not test_run:
         trainer = pl.Trainer(
-            strategy=DDPStrategy(find_unused_parameters=True),
+            strategy=DDPStrategy(find_unused_parameters=True, gradient_as_bucket_view=True),
             max_epochs=args.num_epochs,
             gpus=args.ngpus,
             num_nodes=args.num_nodes,
@@ -225,6 +227,7 @@ def main():
             gradient_clip_val=2.0,
             gradient_clip_algorithm="value",
             precision=args.precision,
+            accumulate_grad_batches=2
         )
 
         trainer.fit(model, data)

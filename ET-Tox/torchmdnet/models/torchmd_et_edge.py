@@ -1,8 +1,10 @@
 from typing import Optional, Tuple
+import math
 import torch
 from torch import Tensor, nn
 from torch_geometric.nn import MessagePassing
-from torch_scatter import scatter, scatter_sum
+from torch_geometric.utils import softmax
+from torch_scatter import scatter
 from torchmdnet.models.utils import (
     NeighborEmbedding,
     CosineCutoff,
@@ -73,6 +75,7 @@ class TorchMD_ET(nn.Module):
         use_energy_feature=False,
         use_smiles=False,
         use_atom_props=False,
+        use_edge_attention=True,
     ):
         super(TorchMD_ET, self).__init__()
 
@@ -109,6 +112,7 @@ class TorchMD_ET(nn.Module):
         self.use_energy_feature = use_energy_feature
         self.use_smiles = use_smiles
         self.use_atom_props = use_atom_props
+        self.use_edge_attention = use_edge_attention
         
         act_class = act_class_mapping[activation]
         
@@ -149,10 +153,12 @@ class TorchMD_ET(nn.Module):
         self.attention_layers = nn.ModuleList()
         self.edge_layers = nn.ModuleList()
         for _ in range(num_layers):
+            num_angle_bins = 6
             edge_layer = EdgeEmbedding(
                 hidden_channels,
-                num_angle_bins = 6,
-                activation = nn.SiLU
+                num_angle_bins=num_angle_bins,
+                activation = nn.SiLU,
+                use_attention=self.use_edge_attention,
             )
             self.edge_layers.append(edge_layer)
 
@@ -165,6 +171,7 @@ class TorchMD_ET(nn.Module):
                 attn_activation,
                 cutoff_lower,
                 cutoff_upper,
+                edge_emb_dim=edge_layer.output_dim,
             )
             self.attention_layers.append(layer)
 
@@ -258,12 +265,14 @@ class EdgeEmbedding(MessagePassing):
         self,
         hidden_channels,
         num_angle_bins,
-        activation
+        activation,
+        use_attention=True,
     ):
         super(EdgeEmbedding, self).__init__(aggr="add", node_dim=0)
         self.hidden_channels = hidden_channels
         self.num_angle_bins = num_angle_bins
         self.act = activation()
+        self.use_attention = use_attention
 
         # create the inital edge embeding from the two node emebdings 
         self.edge_mlp = nn.Sequential(
@@ -272,41 +281,121 @@ class EdgeEmbedding(MessagePassing):
             nn.Linear(hidden_channels, hidden_channels)
         )
 
-        self.angle_bins = torch.linspace(-1, 1, num_angle_bins + 1)
+        # create the angle bins for the edge embedding
+        self.register_buffer(
+            "angle_bins",
+            torch.linspace(-1, 1, num_angle_bins + 1),
+            persistent=False,
+        )
 
-        self.edge_proj = nn.Linear(hidden_channels * num_angle_bins, hidden_channels)
+        # self.edge_proj = nn.Linear(hidden_channels * num_angle_bins, hidden_channels)
+        
+        # final dimensionality matches concatenation over all buckets
+        self.output_dim = hidden_channels * num_angle_bins
+
+        self.query_proj = nn.Linear(hidden_channels, hidden_channels)
+        self.key_proj = nn.Linear(hidden_channels, hidden_channels)
+        self.value_proj = nn.Linear(hidden_channels, hidden_channels)
+        self.attn_scale = 1.0 / math.sqrt(hidden_channels)
+        self.neg_inf = -1e9
 
     # x all the node embeddings, all the node's positions, connections between nodes
     def forward(self, x, pos, edge_index):
         # get the two nodes that we're learning the edge emebedding for
         node_i, node_j = edge_index
+        
+        num_edges = edge_index.size(1)
+        if num_edges == 0:
+            return x.new_zeros(x.size(0), self.output_dim)
+        
         # initial edge representation
         e = self.edge_mlp(torch.cat([x[node_i], x[node_j]], dim=-1))
-        # by subtracting the positions of each node we get a vector that points from one node to the next 
+        # by subtracting the positions of each node we get a vector that points from one node to the next
         edge_vec = pos[node_j] - pos[node_i]
         # normalize so it is a unit vector (1e-8 is preventing us from dividing by 0)
         edge_vec = edge_vec / (edge_vec.norm(dim=1, keepdim=True) + 1e-8)
+
+        # equation variables
+        q = self.query_proj(e)
+        k = self.key_proj(e)
+        v = self.value_proj(e)
+
+
         # this is some torchgeometric magic, should call message
-        out = self.propagate(edge_index, x=x, edge_vec=edge_vec, e=e)
+        out = self.propagate(edge_index, x=x, edge_vec=edge_vec, e=e, q=q, k=k, v=v, size=None)
+        
         return out
 
-    def message(self, e_j, edge_vec_i, edge_vec_j, index, ptr, size_i):
+    def message(self, e_j, edge_vec_i, edge_vec_j, index, ptr, size_i, q_i, k_j, v_j):
         # compute the cosin of the angle between the two atoms, this will be used to divide into the N buckets
         cos_theta = (edge_vec_i * edge_vec_j).sum(dim=-1).clamp(-1.0, 1.0)
         # figure out what bin it belongs in based on the angle
-        bin_ids = torch.bucketize(cos_theta, self.angle_bins.to(cos_theta.device)) - 1
+        bin_ids = torch.bucketize(
+            cos_theta, self.angle_bins.to(cos_theta.device)
+        ) - 1
         bin_ids = torch.clamp(bin_ids, 0, self.num_angle_bins - 1)
         # put the value only in the correct bucket
-        one_hot = torch.nn.functional.one_hot(bin_ids, num_classes=self.num_angle_bins).float()
-        e_expanded = e_j.unsqueeze(2) * one_hot.unsqueeze(1)
-        return e_expanded
-    
-    def aggregate(self, inputs, index):
+        one_hot = torch.nn.functional.one_hot(
+            bin_ids, num_classes=self.num_angle_bins
+        ).float()
+
+        # e_expanded = e_j.unsqueeze(2) * one_hot.unsqueeze(1)
+        # return e_expanded
+
+        values = e_j.unsqueeze(2) * one_hot.unsqueeze(1)
+        if self.use_attention:
+            attn_logits = (q_i * k_j).sum(dim=-1) * self.attn_scale
+            logits = one_hot * attn_logits.unsqueeze(1) + (1 - one_hot) * self.neg_inf
+        else:
+            logits = one_hot
+        return values, logits
+
+    def aggregate(self, inputs, index, ptr=None, dim_size=None):
         # sum all values in inputs that correspond to each index
         # m = scatter_sum(inputs, index, dim=0) 
         # concatenate those to form a final embeding
-        e_out = inputs.flatten(start_dim=1)
-        e_out = self.edge_proj(e_out)
+
+        values, logits = inputs
+        if dim_size is None:
+            dim_size = int(index.max().item() + 1) if index.numel() > 0 else 0
+
+        if dim_size == 0:
+            return values.new_zeros(0, self.output_dim)
+
+        if not self.use_attention:
+            summed = scatter(values, index, dim=0, dim_size=dim_size)
+        else:
+            num_edges = values.size(0)
+            num_bins = self.num_angle_bins
+            hidden = self.hidden_channels
+
+            values_flat = values.permute(0, 2, 1).reshape(-1, hidden)
+            logits_flat = logits.reshape(-1)
+
+            index_expanded = index.unsqueeze(1).expand(-1, num_bins).reshape(-1)
+            bucket_ids = torch.arange(num_bins, device=index.device).view(1, -1).expand(num_edges, -1).reshape(-1)
+            group_index = index_expanded * num_bins + bucket_ids
+
+            valid_mask = logits_flat > self.neg_inf / 2
+            if valid_mask.any():
+                logits_valid = logits_flat[valid_mask]
+                values_valid = values_flat[valid_mask]
+                group_valid = group_index[valid_mask]
+
+                attn = softmax(
+                    logits_valid, group_valid, num_nodes=dim_size * num_bins
+                )
+                weighted = values_valid * attn.unsqueeze(-1)
+                summed = scatter(
+                    weighted, group_valid, dim=0, dim_size=dim_size * num_bins
+                )
+                summed = summed.view(dim_size, num_bins, hidden).permute(0, 2, 1)
+            else:
+                summed = values.new_zeros(dim_size, hidden, num_bins)
+
+        #e_out = summed.flatten(start_dim=1)
+        #e_out = self.edge_proj(e_out)
+        e_out = summed.reshape(dim_size, -1)
         return e_out
 
 
@@ -322,6 +411,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
         attn_activation,
         cutoff_lower,
         cutoff_upper,
+        edge_emb_dim=None,
     ):
         super(EquivariantMultiHeadAttention, self).__init__(aggr="add", node_dim=0)
         assert hidden_channels % num_heads == 0, (
@@ -330,6 +420,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
             f"attention heads ({num_heads})"
         )
 
+        self.edge_emb_dim = edge_emb_dim or hidden_channels
         self.distance_influence = distance_influence
         self.num_heads = num_heads
         self.hidden_channels = hidden_channels
@@ -358,7 +449,9 @@ class EquivariantMultiHeadAttention(MessagePassing):
         self.reset_parameters()
 
         ''' small MLP to combine value and edge embedding for node representation learning '''
-        fusion_in_dim = 3 * hidden_channels // num_heads + num_rbf + hidden_channels
+        fusion_in_dim = (
+            3 * hidden_channels // num_heads + num_rbf + self.edge_emb_dim
+        )
         fusion_out_dim = 3 * hidden_channels // num_heads
 
         self.edge_fusion = nn.Sequential(

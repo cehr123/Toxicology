@@ -16,6 +16,12 @@ from torchmdnet.models.energy_correction import *
 from torchmdnet.models.utils import Distance
 
 
+def _get_arg(args, key, default):
+    if isinstance(args, dict):
+        return args.get(key, default)
+    return getattr(args, key, default)
+
+
 def create_model(args, prior_model=None, mean=None, std=None):
     shared_args = dict(
         hidden_channels=args["embedding_dimension"],
@@ -29,10 +35,13 @@ def create_model(args, prior_model=None, mean=None, std=None):
         cutoff_upper=args["cutoff_upper"],
         max_z=args["max_z"],
         num_atom_types=args["num_atom_types"],
-        max_num_neighbors=args["max_num_neighbors"],
+        max_num_neighbors=args["max_num_neighbors"]
     )
 
     # representation network
+    use_edge_attention = _get_arg(args, "use_edge_attention", True)
+    use_n_gram = _get_arg(args, "use_n_gram", True)
+
     if args["model"] == "graph-network":
         from torchmdnet.models.torchmd_gn import TorchMD_GN
 
@@ -78,6 +87,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
             use_energy_feature=args["use_energy_feature"],
             use_smiles=args["use_smiles"],
             use_atom_props=args["use_atom_props"],
+            use_edge_attention = use_edge_attention,
             **shared_args,
         )
     else:
@@ -117,6 +127,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         use_smiles=args["use_smiles"],
         context_length=args["max_len_smiles"],
         use_smiles_only=args["use_smiles_only"],
+        n_gram = use_n_gram,
     )
     return model
 
